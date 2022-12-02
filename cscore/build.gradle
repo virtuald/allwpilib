@@ -48,10 +48,42 @@ model {
                 lib project: ':wpinet', library: 'wpinet', linkage: 'shared'
 
                 if (it.targetPlatform.operatingSystem.linux) {
-                    it.linker.args '-Wl,--version-script=' + file('src/main/native/LinuxSymbolScript.txt')
+                    it.linker.args '-Wl,--version-script=' + file('src/main/native/LinuxJNISymbolScript.txt')
                 } else if (it.targetPlatform.operatingSystem.macOsX) {
                     it.linker.args '-exported_symbols_list'
-                    it.linker.args file('src/main/native/MacSymbolScript.txt').toString()
+                    it.linker.args file('src/main/native/MacJNISymbolScript.txt').toString()
+                }
+            }
+        }
+        cscoreCvStatic(NativeLibrarySpec) {
+            baseName = 'cscorecvstatic'
+
+            sources {
+                cpp {
+                    source {
+                        srcDirs 'src/main/native/cpp'
+                        include '*.cpp'
+                    }
+                    exportedHeaders {
+                        srcDir 'src/main/native/include'
+                        include '**/*.h'
+                    }
+
+                }
+            }
+            binaries.all {
+                if (it instanceof StaticLibraryBinarySpec) {
+                    it.buildable = false
+                    return
+                }
+                lib project: ':wpiutil', library: 'wpiutil', linkage: 'shared'
+                lib project: ':wpinet', library: 'wpinet', linkage: 'shared'
+
+                if (it.targetPlatform.operatingSystem.linux) {
+                    it.linker.args '-Wl,--version-script=' + file('src/main/native/LinuxBundleSymbolScript.txt')
+                } else if (it.targetPlatform.operatingSystem.macOsX) {
+                    it.linker.args '-exported_symbols_list'
+                    it.linker.args file('src/main/native/MacBundleSymbolScript.txt').toString()
                 }
             }
         }
@@ -80,7 +112,8 @@ ext {
         cscoreTest: [],
         cscoreJNIShared: []]
     staticCvConfigs = [cscoreJNI: [],
-        cscoreJNICvStatic: []]
+        cscoreJNICvStatic: [],
+        cscoreCvStatic: []]
     useJava = true
     useCpp = true
     cvStaticBuild = true
@@ -157,6 +190,10 @@ Action<List<String>> symbolFilter = { symbols ->
     symbols.removeIf({ !it.startsWith('CS_') })
 } as Action<List<String>>;
 
+Action<List<String>> bundleSymbolFilter = { symbols ->
+    symbols.removeIf({ !it.startsWith('CS_') && it.startsWith("TODO") })
+} as Action<List<String>>;
+
 nativeUtils.exportsConfigs {
     cscore {
         x64ExcludeSymbols = [
@@ -178,6 +215,9 @@ nativeUtils.exportsConfigs {
     }
     cscoreJNICvStatic {
         x64SymbolFilter = symbolFilter
+    }
+    cscoreCvStatic {
+        x64SymbolFilter = bundleSymbolFilter
     }
 }
 

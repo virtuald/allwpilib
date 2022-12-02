@@ -1,0 +1,8 @@
+cscorecvstatic {
+  global: # explicitly list symbols to be exported
+    CS_*;
+    extern "C++" {
+      cs::*
+    };
+  local: *;         # hide everything else
+};
