@@ -5,6 +5,7 @@
 #pragma once
 
 #include <concepts>
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -23,12 +24,20 @@ namespace wpi::nt::server {
 
 class ServerClient;
 
+struct ServerStorageLimits {
+  size_t maxNetworkTopics = 4096;
+  size_t maxPersistentValueSize = 64 * 1024 * 1024;
+};
+
 class ServerStorage final {
  public:
   ServerStorage(wpi::util::Logger& logger,
                 std::function<void(ServerTopic* topic, ServerClient* client)>
-                    sendAnnounce)
-      : m_logger{logger}, m_sendAnnounce{std::move(sendAnnounce)} {}
+                    sendAnnounce,
+                ServerStorageLimits limits = {})
+      : m_logger{logger},
+        m_sendAnnounce{std::move(sendAnnounce)},
+        m_limits{limits} {}
   ServerStorage(const ServerStorage&) = delete;
   ServerStorage& operator=(const ServerStorage&) = delete;
 
@@ -57,6 +66,10 @@ class ServerStorage final {
       return nullptr;
     }
     return it->second;
+  }
+
+  bool CanCreateNetworkTopic() const {
+    return m_numRegularTopics < m_limits.maxNetworkTopics;
   }
 
   // Approximate upper bound, not exact quantity
@@ -89,6 +102,9 @@ class ServerStorage final {
 
   wpi::util::UidVector<std::unique_ptr<ServerTopic>, 16> m_topics;
   wpi::util::StringMap<ServerTopic*> m_nameTopics;
+  ServerStorageLimits m_limits;
+  size_t m_numRegularTopics{0};
+  size_t m_persistentValueSize{0};
   bool m_persistentChanged{false};
 };
 

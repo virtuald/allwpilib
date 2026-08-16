@@ -22,6 +22,11 @@ void ServerClient4Base::ClientPublish(int pubuid, std::string_view name,
                                       const wpi::util::json& properties,
                                       const PubSubOptionsImpl& options) {
   DEBUG3("ClientPublish({}, {}, {}, {})", m_id, name, pubuid, typeStr);
+  if (!m_storage.GetTopic(name) && m_id != 0 &&
+      !m_storage.CanCreateNetworkTopic()) {
+    WARN("client {} publish '{}' ignored due to topic limit", m_id, name);
+    return;
+  }
   auto topic = m_storage.CreateTopic(this, name, typeStr, properties);
 
   // create publisher

@@ -21,6 +21,18 @@ using namespace wpi::nt;
 using namespace wpi::nt::server;
 using namespace mpack;
 
+static bool GetBoolProperty(const wpi::util::json& properties,
+                            std::string_view name, bool defaultValue) {
+  if (auto value = properties.lookup(name)) {
+    return value->is_bool() ? value->get_bool() : defaultValue;
+  }
+  return defaultValue;
+}
+
+static size_t GetPersistentValueSize(const ServerTopic* topic) {
+  return topic->persistent && topic->lastValue ? topic->lastValue.size() : 0;
+}
+
 ServerTopic* ServerStorage::CreateTopic(ServerClient* client,
                                         std::string_view name,
                                         std::string_view typeStr,
@@ -43,6 +55,9 @@ ServerTopic* ServerStorage::CreateTopic(ServerClient* client,
     topic = m_topics[id].get();
     topic->id = id;
     topic->special = special;
+    if (!special) {
+      ++m_numRegularTopics;
+    }
 
     m_sendAnnounce(topic, client);
 
@@ -66,6 +81,11 @@ ServerTopic* ServerStorage::CreateMetaTopic(std::string_view name) {
 void ServerStorage::DeleteTopic(ServerTopic* topic) {
   if (!topic) {
     return;
+  }
+
+  m_persistentValueSize -= GetPersistentValueSize(topic);
+  if (!topic->special) {
+    --m_numRegularTopics;
   }
 
   // delete meta topics
@@ -93,8 +113,39 @@ void ServerStorage::SetProperties(ServerClient* client, ServerTopic* topic,
                                   const wpi::util::json& update) {
   DEBUG4("SetProperties({}, {}, {})", client ? client->GetId() : -1,
          topic->name, update.to_string());
+  if (!update.is_object()) {
+    return;
+  }
+  size_t oldPersistentValueSize = GetPersistentValueSize(topic);
+  auto updatedProperties = topic->properties;
+  for (auto&& [key, value] : update.get_object()) {
+    if (value.is_null()) {
+      updatedProperties.erase(key);
+    } else {
+      updatedProperties[key] = value;
+    }
+  }
+  bool willBePersistent =
+      GetBoolProperty(updatedProperties, "persistent", false);
+  bool willBeCached = GetBoolProperty(updatedProperties, "cached", true);
+  size_t newPersistentValueSize =
+      willBePersistent && willBeCached && topic->lastValue
+          ? topic->lastValue.size()
+          : 0;
+  size_t persistentValueSizeWithoutTopic =
+      m_persistentValueSize - oldPersistentValueSize;
+  if (persistentValueSizeWithoutTopic > m_limits.maxPersistentValueSize ||
+      newPersistentValueSize >
+          m_limits.maxPersistentValueSize - persistentValueSizeWithoutTopic) {
+    WARN("ignoring properties update for '{}' due to persistent memory limit",
+         topic->name);
+    return;
+  }
+
   bool wasPersistent = topic->persistent;
   if (topic->SetProperties(update)) {
+    m_persistentValueSize =
+        persistentValueSizeWithoutTopic + GetPersistentValueSize(topic);
     // update persistentChanged flag
     if (topic->persistent != wasPersistent) {
       m_persistentChanged = true;
@@ -105,8 +156,27 @@ void ServerStorage::SetProperties(ServerClient* client, ServerTopic* topic,
 
 void ServerStorage::SetFlags(ServerClient* client, ServerTopic* topic,
                              unsigned int flags) {
+  size_t oldPersistentValueSize = GetPersistentValueSize(topic);
+  bool willBePersistent = (flags & NT_PERSISTENT) != 0;
+  bool willBeCached = (flags & NT_UNCACHED) == 0;
+  size_t newPersistentValueSize =
+      willBePersistent && willBeCached && topic->lastValue
+          ? topic->lastValue.size()
+          : 0;
+  size_t persistentValueSizeWithoutTopic =
+      m_persistentValueSize - oldPersistentValueSize;
+  if (persistentValueSizeWithoutTopic > m_limits.maxPersistentValueSize ||
+      newPersistentValueSize >
+          m_limits.maxPersistentValueSize - persistentValueSizeWithoutTopic) {
+    WARN("ignoring flag update for '{}' due to persistent memory limit",
+         topic->name);
+    return;
+  }
+
   bool wasPersistent = topic->persistent;
   if (topic->SetFlags(flags)) {
+    m_persistentValueSize =
+        persistentValueSizeWithoutTopic + GetPersistentValueSize(topic);
     // update persistentChanged flag
     if (topic->persistent != wasPersistent) {
       m_persistentChanged = true;
@@ -125,13 +195,28 @@ void ServerStorage::SetFlags(ServerClient* client, ServerTopic* topic,
 void ServerStorage::SetValue(ServerClient* client, ServerTopic* topic,
                              const Value& value) {
   // update retained value if from same client or timestamp newer
-  if (topic->cached && (!topic->lastValue || topic->lastValueClient == client ||
-                        topic->lastValue.time() == 0 ||
-                        value.time() >= topic->lastValue.time())) {
+  bool updateCached =
+      topic->cached &&
+      (!topic->lastValue || topic->lastValueClient == client ||
+       topic->lastValue.time() == 0 || value.time() >= topic->lastValue.time());
+  size_t oldPersistentValueSize = GetPersistentValueSize(topic);
+  size_t persistentValueSizeWithoutTopic =
+      m_persistentValueSize - oldPersistentValueSize;
+  if (updateCached && topic->persistent &&
+      (persistentValueSizeWithoutTopic > m_limits.maxPersistentValueSize ||
+       value.size() >
+           m_limits.maxPersistentValueSize - persistentValueSizeWithoutTopic)) {
+    WARN("not caching '{}' value due to persistent memory limit", topic->name);
+    updateCached = false;
+  }
+  if (updateCached) {
     DEBUG4("updating '{}' last value (time was {} is {})", topic->name,
            topic->lastValue.time(), value.time());
     topic->lastValue = value;
     topic->lastValueClient = client;
+    if (topic->persistent) {
+      m_persistentValueSize = persistentValueSizeWithoutTopic + value.size();
+    }
 
     // if persistent, update flag
     if (topic->persistent) {
