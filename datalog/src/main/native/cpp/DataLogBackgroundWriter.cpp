@@ -47,6 +47,25 @@ static std::string FormatBytesSize(uintmax_t value) {
   }
 }
 
+static bool IsFilenameSafe(std::string_view filename) {
+  if (filename.empty()) {
+    return true;
+  }
+  fs::path path{filename};
+  return !path.has_root_path() && !path.has_parent_path() && path != "." &&
+         path != "..";
+}
+
+static std::string ValidateFilename(wpi::util::Logger& msglog,
+                                    std::string_view filename) {
+  if (!IsFilenameSafe(filename)) {
+    WPI_ERROR(msglog, "Log filename '{}' is not a plain filename; ignoring",
+              filename);
+    return {};
+  }
+  return std::string{filename};
+}
+
 DataLogBackgroundWriter::DataLogBackgroundWriter(std::string_view dir,
                                                  std::string_view filename,
                                                  double period,
@@ -61,7 +80,7 @@ DataLogBackgroundWriter::DataLogBackgroundWriter(wpi::util::Logger& msglog,
                                                  std::string_view extraHeader)
     : DataLog{msglog, extraHeader},
       m_period{period < 0.0 ? 0.0 : period},
-      m_newFilename{filename},
+      m_newFilename{ValidateFilename(msglog, filename)},
       m_thread{[this, dir = std::string{dir}] { WriterThreadMain(dir); }} {}
 
 DataLogBackgroundWriter::DataLogBackgroundWriter(
@@ -92,9 +111,13 @@ DataLogBackgroundWriter::~DataLogBackgroundWriter() {
 }
 
 void DataLogBackgroundWriter::SetFilename(std::string_view filename) {
+  auto validFilename = ValidateFilename(m_msglog, filename);
+  if (!filename.empty() && validFilename.empty()) {
+    return;
+  }
   {
     std::scoped_lock lock{m_mutex};
-    m_newFilename = filename;
+    m_newFilename = std::move(validFilename);
     m_wakeup = true;
   }
   m_cond.notify_one();

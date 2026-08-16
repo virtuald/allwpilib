@@ -5,8 +5,11 @@
 #include "wpi/datalog/DataLogBackgroundWriter.hpp"
 
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -34,6 +37,19 @@ struct AutomaticOutputState {
   std::promise<void> outputStartedPromise;
   std::shared_future<void> outputStarted;
   bool outputReported = false;
+};
+
+struct TemporaryDirectory {
+  TemporaryDirectory() {
+    auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    path = std::filesystem::temp_directory_path() /
+           ("wpilib-datalog-path-test-" + std::to_string(suffix));
+    std::filesystem::create_directories(path / "logs");
+  }
+
+  ~TemporaryDirectory() { std::filesystem::remove_all(path); }
+
+  std::filesystem::path path;
 };
 
 }  // namespace
@@ -157,4 +173,40 @@ TEST_CASE("DataLogBackgroundWriterTest FlushWakesAfterBlockedDrain",
       std::future_status::ready;
   writer.reset();
   REQUIRE(secondDrainWasPrompt);
+}
+
+TEST_CASE("DataLogBackgroundWriterTest FilenameCannotEscapeDirectory",
+          "[datalog][background-writer]") {
+  TemporaryDirectory temp;
+  auto logDir = temp.path / "logs";
+  auto victim = temp.path / "victim.txt";
+  {
+    std::ofstream out{victim};
+    out << "ORIGINAL";
+  }
+
+  {
+    wpi::log::DataLogBackgroundWriter log{logDir.string(), "safe.wpilog", 0.01};
+    for (int i = 0; i < 200 && !std::filesystem::exists(logDir / "safe.wpilog");
+         ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    REQUIRE(std::filesystem::exists(logDir / "safe.wpilog"));
+    log.SetFilename("../victim.txt");
+    log.Flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+  }
+
+  std::ifstream in{victim};
+  std::string contents;
+  in >> contents;
+  CHECK(contents == "ORIGINAL");
+
+  auto escaped = temp.path / "escaped.wpilog";
+  {
+    wpi::log::DataLogBackgroundWriter log{logDir.string(), "../escaped.wpilog",
+                                          0.01};
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+  }
+  CHECK_FALSE(std::filesystem::exists(escaped));
 }
