@@ -47,14 +47,7 @@ public class DataLogReader implements Iterable<DataLogRecord> {
    * @return True if valid, false otherwise
    */
   public boolean isValid() {
-    return m_buf.remaining() >= 12
-        && m_buf.get(0) == 'W'
-        && m_buf.get(1) == 'P'
-        && m_buf.get(2) == 'I'
-        && m_buf.get(3) == 'L'
-        && m_buf.get(4) == 'O'
-        && m_buf.get(5) == 'G'
-        && m_buf.getShort(6) >= 0x0100;
+    return getHeader() != null;
   }
 
   /**
@@ -64,10 +57,8 @@ public class DataLogReader implements Iterable<DataLogRecord> {
    *     1.0 will be 0x0100)
    */
   public short getVersion() {
-    if (m_buf.remaining() < 12) {
-      return 0;
-    }
-    return m_buf.getShort(6);
+    Header header = getHeader();
+    return header != null ? header.version : 0;
   }
 
   /**
@@ -76,19 +67,26 @@ public class DataLogReader implements Iterable<DataLogRecord> {
    * @return Extra header data
    */
   public String getExtraHeader() {
+    Header header = getHeader();
+    if (header == null) {
+      return "";
+    }
     ByteBuffer buf = m_buf.duplicate();
     buf.order(ByteOrder.LITTLE_ENDIAN);
-    buf.position(8);
-    int size = buf.getInt();
-    byte[] arr = new byte[size];
+    buf.position(12);
+    byte[] arr = new byte[header.extraHeaderSize];
     buf.get(arr);
     return new String(arr, StandardCharsets.UTF_8);
   }
 
   @Override
   public void forEach(Consumer<? super DataLogRecord> action) {
+    Header header = getHeader();
+    if (header == null) {
+      return;
+    }
     int size = m_buf.remaining();
-    for (int pos = 12 + m_buf.getInt(8); pos < size; pos = getNextRecord(pos)) {
+    for (int pos = header.recordsStart; pos < size; pos = getNextRecord(pos)) {
       DataLogRecord record;
       try {
         record = getRecord(pos);
@@ -101,7 +99,33 @@ public class DataLogReader implements Iterable<DataLogRecord> {
 
   @Override
   public DataLogIterator iterator() {
-    return new DataLogIterator(this, 12 + m_buf.getInt(8));
+    Header header = getHeader();
+    return new DataLogIterator(this, header != null ? header.recordsStart : size());
+  }
+
+  private Header getHeader() {
+    int size = m_buf.remaining();
+    if (size < 12
+        || m_buf.get(0) != 'W'
+        || m_buf.get(1) != 'P'
+        || m_buf.get(2) != 'I'
+        || m_buf.get(3) != 'L'
+        || m_buf.get(4) != 'O'
+        || m_buf.get(5) != 'G') {
+      return null;
+    }
+
+    short version = m_buf.getShort(6);
+    if (Short.toUnsignedInt(version) < 0x0100) {
+      return null;
+    }
+
+    long extraHeaderSize = Integer.toUnsignedLong(m_buf.getInt(8));
+    if (extraHeaderSize > size - 12) {
+      return null;
+    }
+    int checkedExtraHeaderSize = (int) extraHeaderSize;
+    return new Header(version, checkedExtraHeaderSize, 12 + checkedExtraHeaderSize);
   }
 
   private long readVarInt(int pos, int len) {
@@ -148,6 +172,18 @@ public class DataLogReader implements Iterable<DataLogRecord> {
 
   int size() {
     return m_buf.remaining();
+  }
+
+  private static class Header {
+    Header(short version, int extraHeaderSize, int recordsStart) {
+      this.version = version;
+      this.extraHeaderSize = extraHeaderSize;
+      this.recordsStart = recordsStart;
+    }
+
+    final short version;
+    final int extraHeaderSize;
+    final int recordsStart;
   }
 
   private final ByteBuffer m_buf;
