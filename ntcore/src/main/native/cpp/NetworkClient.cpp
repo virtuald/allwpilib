@@ -34,6 +34,7 @@ static constexpr uv::Timer::Time kReconnectRate{1000};
 static constexpr uv::Timer::Time kWebsocketHandshakeTimeout{500};
 // use a larger max message size for websockets
 static constexpr size_t kMaxMessageSize = 2 * 1024 * 1024;
+static constexpr size_t kMaxResolvedServers = 16;
 
 static std::string Ipv4AddressToString(unsigned int address) {
   return std::format("{}.{}.{}.{}", (address >> 24) & 0xff,
@@ -236,6 +237,9 @@ bool NetworkClientBase::AddResolvedServer(
     std::pair<std::string, unsigned int> server) {
   if (std::find(m_resolvedServers.begin(), m_resolvedServers.end(), server) !=
       m_resolvedServers.end()) {
+    return false;
+  }
+  if (m_resolvedServers.size() >= kMaxResolvedServers) {
     return false;
   }
 
