@@ -11,6 +11,7 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <chrono>
 #include <format>
 #include <string>
@@ -131,16 +132,25 @@ std::function<void(std::string_view)> FileLogger::Buffer(
     std::function<void(std::string_view)> callback) {
   return [callback, buf = wpi::util::SmallVector<char, 64>{}](
              std::string_view data) mutable {
-    buf.append(data.begin(), data.end());
-    if (!wpi::util::contains({data.data(), data.size()}, "\n")) {
-      return;
-    }
-    auto [wholeData, extra] = wpi::util::rsplit({buf.data(), buf.size()}, "\n");
-    std::string leftover{extra};
+    while (!data.empty()) {
+      size_t appendSize =
+          std::min(data.size(), kMaxPartialLineSize - buf.size());
+      buf.append(data.begin(), data.begin() + appendSize);
+      data.remove_prefix(appendSize);
 
-    callback(wholeData);
-    buf.clear();
-    buf.append(leftover.begin(), leftover.end());
+      std::string_view buffered{buf.data(), buf.size()};
+      if (wpi::util::contains(buffered, "\n")) {
+        auto [wholeData, extra] = wpi::util::rsplit(buffered, "\n");
+        std::string leftover{extra};
+
+        callback(wholeData);
+        buf.clear();
+        buf.append(leftover.begin(), leftover.end());
+      } else if (buf.size() == kMaxPartialLineSize) {
+        callback(buffered);
+        buf.clear();
+      }
+    }
   };
 }
 }  // namespace wpi::log

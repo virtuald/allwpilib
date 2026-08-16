@@ -5,6 +5,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <string_view>
@@ -19,6 +20,9 @@ namespace wpi::log {
  */
 class FileLogger {
  public:
+  /** Maximum number of partial-line bytes retained by Buffer(). */
+  static constexpr size_t kMaxPartialLineSize = 16 * 1024;
+
   FileLogger() = default;
   /**
    * Construct a FileLogger. When the specified file is modified, the callback
@@ -44,7 +48,8 @@ class FileLogger {
   ~FileLogger();
   /**
    * Creates a function that chunks incoming data into blocks of whole lines and
-   * stores incomplete lines to add to the next block of data.
+   * stores incomplete lines to add to the next block of data. Partial lines
+   * longer than kMaxPartialLineSize are emitted in kMaxPartialLineSize chunks.
    *
    * @param callback A callback that accepts the blocks of whole lines.
    * @return The function.

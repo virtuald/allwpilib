@@ -68,6 +68,25 @@ TEST_CASE("FileLoggerTest BufferMultipleMultiLinePartials",
   CHECK("part 3part 4" == buf[1]);
 }
 
+TEST_CASE("FileLoggerTest BufferBoundsNewlineFreeData",
+          "[datalog][file-logger]") {
+  std::vector<std::string> buf;
+  auto func = wpi::log::FileLogger::Buffer(
+      [&buf](std::string_view line) { buf.emplace_back(line); });
+  std::string chunk(8000, 'A');
+  for (int i = 0; i < 5; ++i) {
+    func(chunk);
+  }
+
+  REQUIRE(buf.size() == 2);
+  CHECK(buf[0].size() == wpi::log::FileLogger::kMaxPartialLineSize);
+  CHECK(buf[1].size() == wpi::log::FileLogger::kMaxPartialLineSize);
+
+  func("\n");
+  REQUIRE(buf.size() == 3);
+  CHECK(buf[2].size() == 40000 - 2 * wpi::log::FileLogger::kMaxPartialLineSize);
+}
+
 #ifdef __linux__
 TEST_CASE("FileLoggerTest MissingFileDoesNotDeadlock",
           "[datalog][file-logger]") {
