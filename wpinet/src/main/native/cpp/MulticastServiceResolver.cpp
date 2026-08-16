@@ -4,6 +4,7 @@
 
 #include "wpi/net/MulticastServiceResolver.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -91,6 +92,9 @@ WPI_ServiceData* WPI_GetMulticastServiceResolverData(
     size_t keysTotalLength = 0;
     size_t valuesTotalLength = 0;
     // Include space for all keys and values, and pointer array
+    if (!data.txt.empty()) {
+      allocSize += alignof(char*) - 1;
+    }
     for (auto&& t : data.txt) {
       allocSize += sizeof(const char*);
       keysTotalLength += (t.first.size() + 1);
@@ -124,6 +128,13 @@ WPI_ServiceData* WPI_GetMulticastServiceResolverData(
     currentData->serviceName = reinterpret_cast<const char*>(cDataRaw);
     cDataRaw += data.serviceName.size() + 1;
 
+    if (!data.txt.empty()) {
+      uintptr_t misalignment =
+          reinterpret_cast<uintptr_t>(cDataRaw) % alignof(char*);
+      if (misalignment != 0) {
+        cDataRaw += alignof(char*) - misalignment;
+      }
+    }
     char** valuesPtrArr = reinterpret_cast<char**>(cDataRaw);
     cDataRaw += (sizeof(char**) * data.txt.size());
     char** keysPtrArr = reinterpret_cast<char**>(cDataRaw);
