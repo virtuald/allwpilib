@@ -209,6 +209,32 @@ std::string StructDescriptor::CalculateOffsets(
 const StructDescriptor* StructDescriptorDatabase::Add(std::string_view name,
                                                       std::string_view schema,
                                                       std::string* err) {
+  // Validate on an isolated graph. Do not publish this graph: native callers
+  // can retain descriptor and field pointers into the live database.
+  StructDescriptorDatabase candidate;
+  candidate.m_structs = m_structs;
+  for (auto&& [key, desc] : candidate.m_structs) {
+    for (auto*& ref : desc.m_references) {
+      ref = &candidate.m_structs.find(ref->m_name)->second;
+    }
+    for (auto& field : desc.m_fields) {
+      field.m_parent = &desc;
+      if (field.m_struct) {
+        field.m_struct =
+            &candidate.m_structs.find(field.m_struct->m_name)->second;
+      }
+    }
+  }
+  if (!candidate.AddImpl(name, schema, err)) {
+    return nullptr;
+  }
+  // The same operation is now known to succeed. Apply it in place to preserve
+  // descriptor addresses and the field storage of unrelated descriptors.
+  return AddImpl(name, schema, err);
+}
+
+const StructDescriptor* StructDescriptorDatabase::AddImpl(
+    std::string_view name, std::string_view schema, std::string* err) {
   structparser::Parser parser{schema};
   structparser::ParsedSchema parsed;
   if (!parser.Parse(&parsed)) {
@@ -220,6 +246,11 @@ const StructDescriptor* StructDescriptorDatabase::Add(std::string_view name,
   auto& theStruct =
       m_structs.try_emplace(name, name, StructDescriptor::private_init{})
           .first->second;
+  // Redefinition replaces outgoing dependencies, rather than accumulating
+  // stale edges that could spuriously report a cycle on a later insertion.
+  for (auto&& [key, desc] : m_structs) {
+    std::erase(desc.m_references, &theStruct);
+  }
   theStruct.m_schema = schema;
   theStruct.m_fields.clear();
   theStruct.m_fieldsByName.clear();

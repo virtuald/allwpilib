@@ -83,6 +83,90 @@ TEST_CASE_METHOD(DynamicStructTest, "DynamicStructTest Layout boundaries",
   CHECK(nested->GetSize() == max);
 }
 
+TEST_CASE_METHOD(DynamicStructTest, "DynamicStructTest Failed insertion recovery",
+                 "[wpiutil][struct]") {
+  auto stable = db.Add("Stable", "uint8 value", &err);
+  REQUIRE(stable);
+  auto stableField = stable->FindFieldByName("value");
+  REQUIRE(stableField);
+  const uint8_t bytes[] = {42};
+  DynamicStruct view{stable, bytes};
+
+  SECTION("duplicate") {
+    CHECK(db.Add("Bad", "int8 value; int16 value", &err) == nullptr);
+    CHECK(db.Find("Bad") == nullptr);
+    auto good = db.Add("Bad", "int8 value", &err);
+    REQUIRE(good);
+    REQUIRE(good->IsValid());
+    CHECK(good->GetSize() == 1);
+  }
+  SECTION("cycle") {
+    auto outer = db.Add("Outer", "Inner value", &err);
+    REQUIRE(outer);
+    auto inner = db.Find("Inner");
+    REQUIRE(inner);
+    CHECK(db.Add("Inner", "Outer value", &err) == nullptr);
+    CHECK_FALSE(outer->IsValid());
+    CHECK_FALSE(inner->IsValid());
+    CHECK(inner->GetFields().empty());
+    CHECK(db.Add("Inner", "int32 value", &err) == inner);
+    REQUIRE(outer->IsValid());
+    CHECK(outer->GetSize() == 4);
+    CHECK(inner->GetSize() == 4);
+  }
+  SECTION("dependent overflow") {
+    auto count = std::to_string(std::numeric_limits<size_t>::max() / 8 + 1);
+    auto outer = db.Add("Outer", "Inner values[" + count + "]", &err);
+    REQUIRE(outer);
+    auto inner = db.Find("Inner");
+    REQUIRE(inner);
+    CHECK(db.Add("Inner", "uint64 value", &err) == nullptr);
+    CHECK_FALSE(outer->IsValid());
+    CHECK_FALSE(inner->IsValid());
+    CHECK(inner->GetFields().empty());
+    CHECK(db.Add("Inner", "", &err) == inner);
+    REQUIRE(outer->IsValid());
+    CHECK(outer->GetSize() == 0);
+  }
+  SECTION("failed redefinition") {
+    CHECK(db.Add("Stable", "Missing child; int8 x; int8 x", &err) == nullptr);
+    CHECK(db.Find("Missing") == nullptr);
+    CHECK(stable->GetSchema() == "uint8 value");
+  }
+  SECTION("failed dependency resize preserves valid parent") {
+    auto outer = db.Add("Outer", "Stable values[" +
+                                    std::to_string(std::numeric_limits<size_t>::max() / 8 + 1) +
+                                    "]", &err);
+    REQUIRE(outer);
+    auto oldSize = outer->GetSize();
+    CHECK(db.Add("Stable", "uint64 value", &err) == nullptr);
+    REQUIRE(outer->IsValid());
+    CHECK(outer->GetSize() == oldSize);
+  }
+  CHECK(db.Find("Stable") == stable);
+  REQUIRE(stable->IsValid());
+  CHECK(stable->GetSize() == 1);
+  REQUIRE(stable->FindFieldByName("value") == stableField);
+  CHECK(view.GetUintField(stableField) == 42);
+  REQUIRE(db.Add("Successful", "Stable child", &err));
+  CHECK(db.Find("Stable") == stable);
+  CHECK(stable->FindFieldByName("value") == stableField);
+  CHECK(view.GetUintField(stableField) == 42);
+}
+
+TEST_CASE_METHOD(DynamicStructTest, "DynamicStructTest Replaced dependencies",
+                 "[wpiutil][struct]") {
+  auto a = db.Add("A", "B value", &err);
+  REQUIRE(a);
+  CHECK(db.Add("A", "int8 value", &err) == a);
+  auto b = db.Add("B", "A value", &err);
+  REQUIRE(b);
+  REQUIRE(b->IsValid());
+  CHECK(b->GetSize() == 1);
+  CHECK(db.Add("A", "int32 value", &err) == a);
+  CHECK(b->GetSize() == 4);
+}
+
 TEST_CASE_METHOD(DynamicStructTest, "DynamicStructTest Empty",
                  "[wpiutil][struct]") {
   auto desc = db.Add("test", "", &err);

@@ -338,6 +338,11 @@ class StructDescriptorDatabase {
    * structs that have not yet been added, it will not be valid until those
    * structs are also added.
    *
+   * If this returns nullptr, the database is unchanged, including unresolved
+   * references. Descriptor pointers remain valid across insertions. Field
+   * pointers remain valid unless their owning schema is successfully replaced.
+   * This guarantee applies to a single call, not a group of schema additions.
+   *
    * @param[in] name structure name
    * @param[in] schema structure schema
    * @param[out] err detailed error, if nullptr is returned
@@ -355,6 +360,9 @@ class StructDescriptorDatabase {
   const StructDescriptor* Find(std::string_view name) const;
 
  private:
+  const StructDescriptor* AddImpl(std::string_view name, std::string_view schema,
+                                  std::string* err);
+
   StringMap<StructDescriptor> m_structs;
 };
 
