@@ -657,6 +657,55 @@ TEST_CASE_METHOD(DynamicStructTest,
   CHECK(1u == get.size());
 }
 
+TEST_CASE_METHOD(DynamicStructTest,
+                 "DynamicStructTest UnresolvedReplacementInvalidatesDependents",
+                 "[wpiutil][struct]") {
+  auto inner = db.Add("Inner", "uint8 value", &err);
+  auto outer = db.Add("Outer", "Inner child", &err);
+  REQUIRE(inner);
+  REQUIRE(outer);
+  auto child = outer->FindFieldByName("child");
+  REQUIRE(child);
+  auto right = db.Add("Right", "Inner child", &err);
+  auto top = db.Add("Top", "Outer left; Right right; uint8 tail", &err);
+  REQUIRE(right);
+  REQUIRE(top);
+  auto leftField = top->FindFieldByName("left");
+  auto rightField = top->FindFieldByName("right");
+  auto tail = top->FindFieldByName("tail");
+  REQUIRE(top->IsValid());
+
+  REQUIRE(db.Add("Inner", "Missing value", &err) == inner);
+  CHECK_FALSE(inner->IsValid());
+  CHECK_FALSE(outer->IsValid());
+  CHECK_FALSE(right->IsValid());
+  CHECK_FALSE(top->IsValid());
+  CHECK(db.Find("Outer") == outer);
+  CHECK(db.Find("Top") == top);
+  CHECK(outer->FindFieldByName("child") == child);
+  CHECK(top->FindFieldByName("left") == leftField);
+  CHECK(top->FindFieldByName("right") == rightField);
+  CHECK(top->FindFieldByName("tail") == tail);
+  CHECK(child->GetStruct() == inner);
+
+  REQUIRE(db.Add("Missing", "uint32 value", &err));
+  REQUIRE(inner->IsValid());
+  REQUIRE(outer->IsValid());
+  REQUIRE(right->IsValid());
+  REQUIRE(top->IsValid());
+  REQUIRE(outer->FindFieldByName("child") == child);
+  REQUIRE(top->FindFieldByName("tail") == tail);
+  CHECK(child->GetSize() == 4);
+  CHECK(rightField->GetOffset() == 4);
+  CHECK(tail->GetOffset() == 8);
+  CHECK(top->GetSize() == 9);
+  uint8_t data[9]{};
+  wpi::util::MutableDynamicStruct dynamic{top, data};
+  dynamic.SetUintField(tail, 42);
+  CHECK(data[8] == 42);
+  CHECK(dynamic.GetUintField(tail) == 42);
+}
+
 struct SimpleTestParam {
   const char* schema;
   size_t size;

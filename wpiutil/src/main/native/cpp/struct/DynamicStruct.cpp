@@ -332,6 +332,17 @@ const StructDescriptor* StructDescriptorDatabase::AddImpl(
                                     StructFieldDescriptor::private_init{});
   }
 
+  auto invalidateDependents = [&] {
+    std::vector<StructDescriptor*> affected{&theStruct};
+    for (size_t i = 0; i < affected.size(); ++i) {
+      affected[i]->m_valid = false;
+      for (auto* ref : affected[i]->m_references) {
+        if (std::find(affected.begin(), affected.end(), ref) == affected.end()) {
+          affected.push_back(ref);
+        }
+      }
+    }
+  };
   theStruct.m_valid = isValid;
   if (isValid) {
     // we have all the info needed, so calculate field offset & shift
@@ -340,18 +351,14 @@ const StructDescriptor* StructDescriptorDatabase::AddImpl(
     if (!err2.empty()) {
       *err = std::move(err2);
       // No affected descriptor may retain a usable stale layout on failure.
-      std::vector<StructDescriptor*> affected{&theStruct};
-      for (size_t i = 0; i < affected.size(); ++i) {
-        affected[i]->m_valid = false;
-        for (auto* ref : affected[i]->m_references) {
-          if (std::find(affected.begin(), affected.end(), ref) == affected.end()) {
-            affected.push_back(ref);
-          }
-        }
-      }
+      invalidateDependents();
       [[unlikely]] return nullptr;
     }
   } else {
+    // An accepted unresolved replacement also makes every referring type
+    // unusable, even if it previously had a valid layout. Visit shared
+    // dependents only once and leave their descriptor/field storage intact.
+    invalidateDependents();
     // check for circular reference
     wpi::util::SmallVector<const StructDescriptor*, 16> stack;
     if (!theStruct.CheckCircular(stack)) {

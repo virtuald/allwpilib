@@ -63,8 +63,9 @@ Normal Bazel baseline command (max two jobs):
 ../../bazelisk test //wpiutil/src/test/native:all --jobs=2
 ```
 
-Compilation succeeded, but normal linking is blocked by a host GCC libatomic
-script referencing a missing shared library (see ISSUE-2-REPORT.md). Focused
+At the original implementation checkpoint, compilation succeeded, but normal
+linking was blocked by a host GCC libatomic script referencing a missing shared
+library (see ISSUE-2-REPORT.md). This is now resolved; see follow-up below. Focused
 native alternative: reuse those generated native-suite objects; compile only
 this branch's changed test/implementation translation units with
 `g++ -std=c++23 -fPIC`, include directories
@@ -88,8 +89,128 @@ public-API assertion test, not a claim that the entire suite ran in 32-bit mode.
 
 ## Downstream impact
 
-With **both** this commit and its exact item-2 parent, downstream candidate
-rebuilding and post-layout overflow inspection are unnecessary for a single
-native Add operation. Consumers still need their own transaction when publishing
-a group of mutually dependent schema additions atomically. No descriptor-by-name
-wrapper is needed merely to preserve native pointer lifetime across insertions.
+With **both** this change and its exact item-2 parent, the tested native contract
+is that a single Add returning nullptr leaves database state and retained
+pointers unchanged, and checked native layout arithmetic rejects overflow.
+Downstream candidate rebuilding or overflow inspection used solely for those
+contracts can be removed. This does not establish equivalence with any other
+downstream validation or publication policy. Consumers still need their own
+transaction for atomic groups of additions. Descriptor pointers survive
+successful additions/replacements; fields of the replaced schema do not have
+that guarantee. Dependent-field pointers survive layout refresh, but consumers
+must check IsValid() before using a layout and provide appropriately sized data
+after a successful resize.
+
+## Review follow-up: unresolved replacement
+
+Verified the reviewer finding using `Inner = uint8 value`,
+`Outer = Inner child`, plus `Right = Inner child` and
+`Top = Outer left; Right right; uint8 tail`. Replacing Inner with
+`Missing value` succeeds, but previously left Outer, Right, and Top falsely
+valid. The new regression failed exactly those three validity assertions before
+the fix (Bazel exit 3, `/tmp/issue5-followup-red.log`).
+
+AddImpl now shares its existing visited-dependent invalidation walk between
+layout failure and unresolved replacement. It marks all transitive dependents
+invalid without rebuilding their fields. The multilevel diamond regression
+checks descriptor/dependent-field pointers and later completion with
+`Missing = uint32 value`, including refreshed offsets/size and retained-field
+codec access. This is an accepted unresolved state, not an Add failure: old
+layout metadata may remain stored but is not usable while IsValid() is false.
+
+Fresh verification (GCC 15, Linux x86-64):
+
+* `../../bazelisk test //wpiutil/src/test/native:all --jobs=2`, normal linking
+  with libatomic restored: exit **0**, both Bazel test labels pass, **1003 cases /
+  23382 assertions** in the full wpiutil native executable.
+  Log: `/tmp/issue5-followup-green.log`.
+* Actual `-m32` Catch2 build of `DynamicStructTest.cpp` and
+  `SchemaParserTest.cpp`, including the new diamond regression: build **0**, run
+  **0**, **64 cases / 911 assertions**. `readelf -h` confirms ELF32 / Intel 80386.
+  Logs: `/tmp/issue5-followup-real32{,-build}.log`.
+* Rebuilt and reran both `/tmp/insertion32.cpp` and `/tmp/layout32.cpp` against
+  the current source: each build **0**, each run **0**. Both assert 32-bit size_t.
+  Logs: `/tmp/issue5-followup-{insertion,layout}32{,-build}.log`.
+* All three 32-bit builds use `-fsanitize=shift
+  -fsanitize-undefined-trap-on-error`; these are focused tests, not the whole
+  wpiutil suite in 32-bit mode. Use the source/include list above; the Catch2
+  run additionally links `/tmp/issue1-catch32/libcatch.a` and native `main.cpp`.
+
+## Measured transaction cost and remaining traversal limitation
+
+Standalone public-API microbenchmark, GCC 15 `-O2 -std=c++23`, Linux x86-64;
+median of three fresh-database runs, wall-clock milliseconds for all N Add
+calls. Each type has one field. Independent types use `uint8 value`; chain T0
+uses the same schema and each Ti uses `T(i-1) child`. The chain is inserted
+leaf-first, so these timings isolate insertion/copy cost rather than a later
+root-completion propagation. Strings and parsing are included; compilation and
+database destruction are excluded. Baseline is exact item-2 parent
+`8f88a856de5ead603c56a6e9905c7e21f8db8980`, compiled with identical flags.
+
+| N | Independent baseline | Independent current | Chain baseline | Chain current |
+|---:|---:|---:|---:|---:|
+| 500 | 0.262 | 18.759 | 0.227 | 51.560 |
+| 1000 | 0.315 | 86.021 | 0.488 | 241.799 |
+| 2000 | 0.684 | 372.046 | 0.967 | 984.027 |
+| 4000 | 1.398 | 1591.870 | 2.019 | 3980.718 |
+
+Build/run exits were **0** for both versions. Raw results:
+`/tmp/issue5{,-baseline}-benchmark.csv`; harness:
+`/tmp/issue5-benchmark.cpp`. Reproduction harness:
+
+```cpp
+#include "wpi/util/struct/DynamicStruct.hpp"
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+using namespace wpi::util;
+int main() {
+  for (bool chain : {false, true}) {
+    for (int n : {500, 1000, 2000, 4000}) {
+      for (int rep = 0; rep < 3; ++rep) {
+        StructDescriptorDatabase db;
+        std::string err;
+        auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < n; ++i) {
+          auto schema = chain && i ? "T" + std::to_string(i-1) + " child"
+                                   : "uint8 value";
+          if (!db.Add("T" + std::to_string(i), schema, &err)) std::abort();
+        }
+        auto ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now()-start).count();
+        std::printf("%s,%d,%d,%.3f\n", chain ? "chain" : "independent",
+                    n, rep, ms);
+      }
+    }
+  }
+}
+```
+
+Compile using the source/include list from the 32-bit command in
+ISSUE-2-REPORT.md, replacing `/tmp/layout32.cpp` with this harness, removing
+`-m32`, and adding `-O2`. For baseline replace DynamicStruct.cpp with
+`git show 8f88a856de5ead603c56a6e9905c7e21f8db8980:wpiutil/src/main/native/cpp/struct/DynamicStruct.cpp`.
+
+Copying/remapping every existing descriptor, field, schema, and reverse edge
+costs O(graph storage) time and temporary memory **per insertion**, in addition
+to validation and replay. Removing stale dependency edges also scans the graph.
+For bounded-size independent schemas (or this chain), aggregate insertion is
+O(N²), consistent with roughly fourfold time on doubling N. At N=4000 the
+measured slowdowns are about 1139x independent and 1972x chain versus the very
+small baseline. This is not a cheap transaction implementation for large schema
+registries. It buys an auditable preflight and stable live pointers without a
+rollback journal; accepting that cost is an explicit tradeoff, not a performance
+claim. Incremental transaction design remains outside this follow-up.
+
+Existing CheckCircular and CalculateOffsets recursively follow reverse edges
+without a global visited set. Multiple fields referring to the same type create
+repeated reverse edges; reconvergent diamonds can multiply traversed paths
+exponentially, and deep chains can exhaust the call stack. This predates the
+copy transaction, which repeats validation work, and is **not fixed here**.
+The new invalidation walk visits each affected descriptor once, but its linear
+membership search can itself cost O(V*E); it does not make later cycle/layout
+walks linear. These benchmarks do not represent adversarial diamonds or repeated
+edges. The small diamond test establishes correctness/recovery, not scalability.
+Deduplicating edges or redesigning propagation is deferred rather than bundled
+into the atomicity fix.
