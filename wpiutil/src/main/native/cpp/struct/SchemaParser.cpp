@@ -166,7 +166,7 @@ bool Parser::ParseDeclaration(ParsedDeclaration* out) {
     if (!Expect(Token::INTEGER)) {
       [[unlikely]] return false;
     }
-    auto val = parse_integer<uint64_t>(m_token.text, 10);
+    auto val = parse_integer<size_t>(m_token.text, 10);
     if (val && *val > 0) {
       out->arraySize = *val;
     } else {

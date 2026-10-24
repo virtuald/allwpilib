@@ -4,6 +4,10 @@
 
 #include "wpi/util/struct/SchemaParser.hpp"
 
+#include <cstdint>
+#include <limits>
+#include <string>
+
 #include <catch2/catch_template_test_macros.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -68,6 +72,45 @@ TEST_CASE("StructParserTest Array", "[wpiutil][struct]") {
   CHECK(decl.typeString == "int32");
   CHECK(decl.name == "a");
   CHECK(decl.arraySize == 2u);
+}
+
+TEST_CASE("StructParserTest ArrayPlatformBoundary", "[wpiutil][struct]") {
+  // Parsing only: no storage proportional to the declared extent is allocated.
+  for (uint64_t extent : {uint64_t{4294967295}, uint64_t{4294967296},
+                          uint64_t{4294967297},
+                          uint64_t{18446744073709551615ull}}) {
+    CAPTURE(extent);
+    std::string text = "char text[" + std::to_string(extent) + "]";
+    Parser p{text};
+    ParsedSchema schema;
+    if (extent <= std::numeric_limits<size_t>::max()) {
+      REQUIRE(p.Parse(&schema));
+      REQUIRE(schema.declarations.size() == 1u);
+      CHECK(schema.declarations[0].arraySize == extent);
+    } else {
+      CHECK_FALSE(p.Parse(&schema));
+      CHECK_FALSE(p.GetError().empty());
+    }
+  }
+}
+
+TEST_CASE("StructParserTest ArrayIntegerOverflow", "[wpiutil][struct]") {
+  for (auto text : {"char text[18446744073709551616]",
+                    "char text[999999999999999999999999999999999999999999]"}) {
+    CAPTURE(text);
+    Parser p{text};
+    ParsedSchema schema;
+    CHECK_FALSE(p.Parse(&schema));
+    CHECK_FALSE(p.GetError().empty());
+  }
+}
+
+TEST_CASE("StructParserTest ArrayLeadingZeros", "[wpiutil][struct]") {
+  Parser p{"char text[00001]"};
+  ParsedSchema schema;
+  REQUIRE(p.Parse(&schema));
+  REQUIRE(schema.declarations.size() == 1u);
+  CHECK(schema.declarations[0].arraySize == 1u);
 }
 
 TEST_CASE("StructParserTest ArrayTrailingSemi", "[wpiutil][struct]") {
