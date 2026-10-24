@@ -76,9 +76,9 @@ TEST_CASE("StructParserTest Array", "[wpiutil][struct]") {
 
 TEST_CASE("StructParserTest ArrayPlatformBoundary", "[wpiutil][struct]") {
   // Parsing only: no storage proportional to the declared extent is allocated.
-  for (uint64_t extent : {uint64_t{4294967295}, uint64_t{4294967296},
-                          uint64_t{4294967297},
-                          uint64_t{18446744073709551615ull}}) {
+  for (uint64_t extent :
+       {uint64_t{4294967295}, uint64_t{4294967296}, uint64_t{4294967297},
+        uint64_t{18446744073709551615ull}}) {
     CAPTURE(extent);
     std::string text = "char text[" + std::to_string(extent) + "]";
     Parser p{text};
