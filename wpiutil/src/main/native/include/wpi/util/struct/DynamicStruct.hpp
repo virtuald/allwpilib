@@ -360,8 +360,8 @@ class StructDescriptorDatabase {
   const StructDescriptor* Find(std::string_view name) const;
 
  private:
-  const StructDescriptor* AddImpl(std::string_view name, std::string_view schema,
-                                  std::string* err);
+  const StructDescriptor* AddImpl(std::string_view name,
+                                  std::string_view schema, std::string* err);
 
   StringMap<StructDescriptor> m_structs;
 };
